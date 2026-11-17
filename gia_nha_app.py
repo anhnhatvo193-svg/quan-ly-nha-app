@@ -1,15 +1,14 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 
 # ---------------------------------------------------------
 # 1. CẤU HÌNH TRANG & GIAO DIỆN MƯỢT MÀ
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Trợ Lý Dự Đoán & Chọn Mua Nhà Thông Minh",
-    page_icon="🏠",
+    page_title="Ames, Iowa Home Advisor - Định Giá & Chọn Mua Nhà Tại Mỹ",
+    page_icon="🏡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -17,7 +16,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main-header {
-        font-size: 2rem;
+        font-size: 1.95rem;
         font-weight: 800;
         color: #1E3A8A;
         margin-bottom: 0.15rem;
@@ -37,8 +36,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+SQFT_TO_M2 = 0.092903
+
 # ---------------------------------------------------------
-# 2. MÔ HÌNH RỪNG NGẪU NHIÊN THUẦN NUMPY (TỐC ĐỘ CAO, 0 LỖI)
+# 2. MÔ HÌNH RỪNG NGẪU NHIÊN THUẦN NUMPY (NHANH, 0 LỖI THƯ VIỆN)
 # ---------------------------------------------------------
 class FastDecisionTree:
     def __init__(self, max_depth=10, min_samples_split=8, max_features=None, rng=None):
@@ -144,97 +145,92 @@ class FastRandomForest:
 
 
 # ---------------------------------------------------------
-# 3. DANH MỤC THÔNG SỐ & DỮ LIỆU THỊ TRƯỜNG
+# 3. DANH MỤC PHÂN KHU TẠI AMES, IOWA & DỮ LIỆU THỊ TRƯỜNG
 # ---------------------------------------------------------
-KHU_VUC_MAP = {
-    1: "Khu vực 1: Trung tâm VIP / Đô thị lõi",
-    2: "Khu vực 2: Nội thành phát triển",
-    3: "Khu vực 3: Ven trung tâm / Đang mở rộng",
-    4: "Khu vực 4: Ngoại ô / Vùng ven"
+AMES_NEIGHBORHOODS = {
+    "NoRidge / NridgHt (Northridge - Khu biệt thự cao cấp Bắc Ames)": {"tier": 5, "code": "NoRidge", "desc": "Gần hồ Ada Hayden, nhà lớn, sang trọng nhất Ames"},
+    "StoneBr (Stone Brook - Khu dân cư cao cấp Đông Bắc)": {"tier": 5, "code": "StoneBr", "desc": "Yên tĩnh, mật độ thấp, thiết kế hiện đại"},
+    "Somerst (Somerset - Khu đô thị hiện đại & tiện ích)": {"tier": 4, "code": "Somerst", "desc": "Quy hoạch đồng bộ, nhà hàng & công viên nội khu"},
+    "CollgCr (College Creek - Gần ĐH Bang Iowa / ISU)": {"tier": 3, "code": "CollgCr", "desc": "Phía Tây Nam Ames, rất được ưa chuộng bởi giảng viên & gia đình"},
+    "Gilbert / Timber (Khu gia đình trẻ & trường học tốt)": {"tier": 3, "code": "Gilbert", "desc": "Không gian xanh, phù hợp gia đình có con nhỏ"},
+    "NWAmes / SawyerW (Tây Bắc Ames - Dân cư ổn định)": {"tier": 2, "code": "NWAmes", "desc": "Khu trung lưu lâu đời, sân vườn rộng, giao thông thuận tiện"},
+    "OldTown / Edwards (Trung tâm phố cổ Ames - Giá mềm)": {"tier": 1, "code": "OldTown", "desc": "Gần trung tâm & campus ISU, giá hợp lý, tiềm năng cải tạo/cho thuê"}
 }
-KHU_VUC_REVERSE = {v: k for k, v in KHU_VUC_MAP.items()}
 
-NOI_THAT_MAP = {
-    1: "Cơ bản (Nhà thô / Sửa chữa nhẹ)",
-    2: "Khá (Đầy đủ nội thất tiêu chuẩn)",
-    3: "Cao cấp (Thiết kế hiện đại, vào ở ngay)"
+CODE_TO_TIER = {
+    "NoRidge": 5, "NridgHt": 5, "StoneBr": 5,
+    "Somerst": 4, "Timber": 4, "Veenker": 4,
+    "CollgCr": 3, "Gilbert": 3, "ClearCr": 3, "Crawfor": 3, "Blmngtn": 3,
+    "NWAmes": 2, "SawyerW": 2, "Mitchel": 2, "NAmes": 2, "NPkVill": 2, "SWISU": 2,
+    "OldTown": 1, "Edwards": 1, "Sawyer": 1, "BrkSide": 1, "IDOTRR": 1, "MeadowV": 1, "BrDale": 1
 }
-NOI_THAT_REVERSE = {v: k for k, v in NOI_THAT_MAP.items()}
 
-HUONG_NHA_MAP = {
-    3: "Đông Nam / Nam (Mát mẻ, đón gió tốt)",
-    2: "Đông / Bắc / Đông Bắc / Tây Nam (Ôn hòa)",
-    1: "Tây / Tây Bắc (Nắng chiều, cần chống nóng)"
+TIER_TO_LABEL = {
+    5: "Northridge / Stone Brook (Cao cấp)",
+    4: "Somerset / Timberland (Hiện đại)",
+    3: "College Creek / Gilbert (Gần ISU)",
+    2: "NW Ames / Sawyer West (Trung lưu)",
+    1: "Old Town / Edwards (Phố cổ - Giá mềm)"
 }
-HUONG_NHA_REVERSE = {v: k for k, v in HUONG_NHA_MAP.items()}
 
 
 @st.cache_data
-def generate_market_data(n_samples: int = 1600) -> pd.DataFrame:
+def generate_ames_market_data(n_samples: int = 1600) -> pd.DataFrame:
     rng = np.random.default_rng(42)
-    area_m2 = np.round(rng.uniform(30, 220, n_samples), 1)
-    frontage_m = np.round(np.clip(np.sqrt(area_m2) * rng.uniform(0.45, 0.85, n_samples), 3.0, 15.0), 1)
-    floors = rng.choice([1, 2, 3, 4, 5], size=n_samples, p=[0.14, 0.26, 0.30, 0.20, 0.10])
-    bedrooms = np.clip(np.round(area_m2 / 26 + floors * 0.45 + rng.normal(0, 0.5, n_samples)), 1, 8).astype(int)
-    bathrooms = np.clip(np.round(bedrooms * 0.85 + rng.normal(0, 0.35, n_samples)), 1, 8).astype(int)
-    location_tier = rng.choice([1, 2, 3, 4], size=n_samples, p=[0.15, 0.30, 0.35, 0.20])
-    alley_width = rng.choice([2.0, 3.0, 4.5, 6.0, 8.0, 12.0], size=n_samples, p=[0.12, 0.22, 0.24, 0.18, 0.14, 0.10])
-    house_age = rng.integers(0, 25, size=n_samples)
-    interior_quality = rng.choice([1, 2, 3], size=n_samples, p=[0.28, 0.47, 0.25])
-    orientation_score = rng.choice([3, 2, 1], size=n_samples, p=[0.40, 0.40, 0.20])
-    has_garage = ((alley_width >= 4.5) & (frontage_m >= 4.0) & (rng.random(n_samples) > 0.30)).astype(int)
-    legal_status = rng.choice([1, 0], size=n_samples, p=[0.90, 0.10])
-    near_amenities = rng.choice([1, 0], size=n_samples, p=[0.65, 0.35])
+    gr_liv_area = np.round(rng.uniform(750, 3400, n_samples), 0)
+    lot_area = np.round(np.clip(gr_liv_area * rng.uniform(3.2, 7.5, n_samples), 2500, 28000), 0)
+    total_bsmt_sf = np.round(gr_liv_area * rng.uniform(0.45, 0.95, n_samples), 0)
+    neighborhood_tier = rng.choice([5, 4, 3, 2, 1], size=n_samples, p=[0.14, 0.16, 0.28, 0.24, 0.18])
+    overall_qual = np.clip(np.round(3.5 + neighborhood_tier * 0.85 + rng.normal(0, 1.1, n_samples)), 2, 10).astype(int)
+    year_built = np.clip(np.round(1945 + neighborhood_tier * 11 + overall_qual * 2.2 + rng.normal(0, 12, n_samples)), 1920, 2026).astype(int)
+    bedrooms = np.clip(np.round(gr_liv_area / 520 + rng.normal(0, 0.5, n_samples)), 1, 6).astype(int)
+    full_bath = np.clip(np.round(gr_liv_area / 850 + rng.normal(0, 0.35, n_samples)), 1, 4).astype(int)
+    garage_cars = np.clip(np.round(overall_qual / 3.3 + rng.normal(0, 0.45, n_samples)), 0, 4).astype(int)
+    central_air = (rng.random(n_samples) < (0.65 + neighborhood_tier * 0.07)).astype(int)
 
-    base_unit = np.select(
-        [location_tier == 1, location_tier == 2, location_tier == 3, location_tier == 4],
-        [0.140, 0.092, 0.058, 0.032]
+    tier_mult = np.select(
+        [neighborhood_tier == 5, neighborhood_tier == 4, neighborhood_tier == 3, neighborhood_tier == 2, neighborhood_tier == 1],
+        [1.34, 1.18, 1.05, 0.94, 0.82]
     )
-    road_mult = 1.0 + (alley_width - 3.5) * 0.030
-    frontage_mult = 1.0 + (frontage_m - 4.2) * 0.022
-    construction_val = area_m2 * floors * 0.0075
-    room_val = bedrooms * 0.10 + bathrooms * 0.07
-    quality_mult = np.select([interior_quality == 1, interior_quality == 2, interior_quality == 3], [0.92, 1.00, 1.14])
-    orient_mult = np.select([orientation_score == 3, orientation_score == 2, orientation_score == 1], [1.03, 1.00, 0.96])
-    age_mult = np.maximum(0.76, 1.0 - house_age * 0.0065)
-    garage_val = has_garage * 0.35
-    amenity_mult = np.where(near_amenities == 1, 1.05, 0.97)
-    legal_mult = np.where(legal_status == 1, 1.00, 0.78)
-    noise = rng.normal(1.0, 0.025, n_samples)
+    qual_mult = 0.62 + (overall_qual ** 1.32) * 0.048
+    age_factor = np.maximum(0.80, 1.0 - (2026 - year_built) * 0.0028)
+    air_mult = np.where(central_air == 1, 1.05, 0.91)
 
-    price_ty = (
-        (area_m2 * base_unit * road_mult * frontage_mult + construction_val + room_val + garage_val)
-        * quality_mult * orient_mult * age_mult * amenity_mult * legal_mult * noise
+    base_price = (
+        gr_liv_area * 82.0
+        + total_bsmt_sf * 34.0
+        + lot_area * 1.45
+        + garage_cars * 13500.0
+        + full_bath * 7500.0
+        + bedrooms * 3500.0
     )
-    price_ty = np.round(np.maximum(0.8, price_ty), 2)
+    noise = rng.normal(1.0, 0.032, n_samples)
+    sale_price = np.round(np.maximum(65000, base_price * tier_mult * qual_mult * age_factor * air_mult * noise), -2)
 
     return pd.DataFrame({
-        "DienTich_m2": area_m2,
-        "MatTien_m": frontage_m,
-        "KhuVuc": location_tier,
-        "DoRongDuong_m": alley_width,
-        "SoTang": floors,
-        "SoPhongNgu": bedrooms,
-        "SoPhongWC": bathrooms,
-        "NoiThat": interior_quality,
-        "HuongNha": orientation_score,
-        "TuoiNha_Nam": house_age,
-        "CoGaraOto": has_garage,
-        "GanTienIch": near_amenities,
-        "PhapLy_SoHong": legal_status,
-        "GiaNha_TyVND": price_ty
+        "GrLivArea": gr_liv_area,
+        "LotArea": lot_area,
+        "TotalBsmtSF": total_bsmt_sf,
+        "NeighborhoodTier": neighborhood_tier,
+        "OverallQual": overall_qual,
+        "YearBuilt": year_built,
+        "BedroomAbvGr": bedrooms,
+        "FullBath": full_bath,
+        "GarageCars": garage_cars,
+        "CentralAir": central_air,
+        "SalePrice": sale_price
     })
 
 
 @st.cache_resource
-def train_house_model(df: pd.DataFrame):
+def train_ames_model(df: pd.DataFrame):
     feature_cols = [
-        "DienTich_m2", "MatTien_m", "KhuVuc", "DoRongDuong_m", "SoTang",
-        "SoPhongNgu", "SoPhongWC", "NoiThat", "HuongNha", "TuoiNha_Nam",
-        "CoGaraOto", "GanTienIch", "PhapLy_SoHong"
+        "GrLivArea", "LotArea", "TotalBsmtSF", "NeighborhoodTier",
+        "OverallQual", "YearBuilt", "BedroomAbvGr", "FullBath",
+        "GarageCars", "CentralAir"
     ]
     X = df[feature_cols].values
-    y = df["GiaNha_TyVND"].values
+    y = df["SalePrice"].values
 
     split_idx = int(len(df) * 0.8)
     X_train, X_test = X[:split_idx], X[split_idx:]
@@ -254,468 +250,480 @@ def predict_with_interval(model, input_df: pd.DataFrame):
     return float(np.mean(tree_preds)), float(np.percentile(tree_preds, 15)), float(np.percentile(tree_preds, 85))
 
 
-if "saved_houses" not in st.session_state:
-    st.session_state.saved_houses = []
+if "saved_ames_houses" not in st.session_state:
+    st.session_state.saved_ames_houses = []
+if "custom_ames_df" not in st.session_state:
+    st.session_state.custom_ames_df = None
 
-df_market = generate_market_data()
-model, feature_cols, model_r2, model_mae = train_house_model(df_market)
+df_market = st.session_state.custom_ames_df if st.session_state.custom_ames_df is not None else generate_ames_market_data()
+model, feature_cols, model_r2, model_mae = train_ames_model(df_market)
 
 # ---------------------------------------------------------
-# 4. THANH BÊN (SIDEBAR): CHỌN LỌC THÔNG SỐ NGÔI NHÀ CỤ THỂ
+# 4. THANH BÊN (SIDEBAR): THÔNG SỐ NHÀ TẠI AMES, IOWA (HOA KỲ)
 # ---------------------------------------------------------
 with st.sidebar:
-    st.header("🎯 Thiết Lập Thông Số Ngôi Nhà")
-    st.caption("Điều chỉnh chính xác diện tích (m²) và các tiêu chí bạn mong muốn:")
+    st.header("🇺🇸 Cấu Hình Nhà Tại Ames, Iowa")
+    st.caption("Nhập thông số theo chuẩn bất động sản Hoa Kỳ (tự động quy đổi m² & VNĐ):")
 
-    ten_phuong_an = st.text_input("🏷️ Tên gợi nhớ phương án", value="Căn 1 - Ưu tiên")
+    ten_phuong_an = st.text_input(
+        "🏷️ Tên gợi nhớ căn nhà",
+        value=f"Căn #{len(st.session_state.saved_ames_houses) + 1} - Ames IA"
+    )
 
-    ngan_sach = st.number_input(
-        "💰 Ngân sách tối đa của bạn (Tỷ VNĐ)",
-        min_value=0.5, max_value=100.0, value=5.8, step=0.1
+    ngan_sach_usd = st.number_input(
+        "💰 Ngân sách tối đa ($ USD)",
+        min_value=50000, max_value=2000000, value=285000, step=5000
+    )
+
+    ty_gia_vnd = st.number_input(
+        "💱 Tỷ giá quy đổi (VNĐ / 1 USD)",
+        min_value=20000, max_value=30000, value=25400, step=100
     )
 
     st.divider()
-    st.subheader("1. Kích thước & Vị trí")
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        dien_tich = st.number_input(
-            "📐 Diện tích đất (m²)",
-            min_value=20.0, max_value=500.0, value=65.0, step=1.0
+    st.subheader("1. Khu vực & Diện tích (sq ft)")
+    nb_label = st.selectbox(
+        "📍 Phân khu (Neighborhood tại Ames, IA)",
+        options=list(AMES_NEIGHBORHOODS.keys()),
+        index=3
+    )
+    nb_info = AMES_NEIGHBORHOODS[nb_label]
+    nb_tier = nb_info["tier"]
+    st.caption(f"ℹ️ *{nb_info['desc']}*")
+
+    gr_liv_area = st.number_input(
+        "🏠 Diện tích sàn sinh hoạt (GrLivArea - sq ft)",
+        min_value=500, max_value=5000, value=1650, step=50
+    )
+    st.caption(f"≈ **{gr_liv_area * SQFT_TO_M2:.1f} m²** diện tích ở trên mặt đất")
+
+    col_a1, col_a2 = st.columns(2)
+    with col_a1:
+        total_bsmt_sf = st.number_input(
+            "🧱 Tầng hầm (sq ft)",
+            min_value=0, max_value=3500, value=1050, step=50
         )
-    with col_d2:
-        mat_tien = st.number_input(
-            "📏 Mặt tiền (m)",
-            min_value=2.5, max_value=30.0, value=4.5, step=0.2
+    with col_a2:
+        lot_area = st.number_input(
+            "🌳 Khuôn viên đất (sq ft)",
+            min_value=1500, max_value=50000, value=9200, step=200
         )
+    st.caption(f"Tầng hầm ≈ **{total_bsmt_sf * SQFT_TO_M2:.1f} m²** | Khuôn viên ≈ **{lot_area * SQFT_TO_M2:.0f} m²**")
 
-    khu_vuc_label = st.selectbox(
-        "📍 Khu vực tọa lạc",
-        options=list(KHU_VUC_REVERSE.keys()),
-        index=1
+    st.subheader("2. Chất lượng & Công năng")
+    overall_qual = st.slider(
+        "⭐ Chất lượng xây dựng & hoàn thiện (1–10)",
+        min_value=1, max_value=10, value=7
     )
-    khu_vuc = KHU_VUC_REVERSE[khu_vuc_label]
-
-    do_rong_duong = st.slider(
-        "🛣️ Độ rộng đường / hẻm trước nhà (m)",
-        min_value=1.5, max_value=20.0, value=5.0, step=0.5
+    year_built = st.slider(
+        "📅 Năm xây dựng (Year Built)",
+        min_value=1920, max_value=2026, value=2004
     )
 
-    huong_nha_label = st.selectbox(
-        "🧭 Hướng nhà chính",
-        options=list(HUONG_NHA_REVERSE.keys()),
-        index=0
-    )
-    huong_nha = HUONG_NHA_REVERSE[huong_nha_label]
+    col_r1, col_r2, col_r3 = st.columns(3)
+    with col_r1:
+        bedrooms = st.number_input("🛏️ Ngủ", min_value=1, max_value=8, value=3, step=1)
+    with col_r2:
+        full_bath = st.number_input("🚿 Tắm", min_value=1, max_value=5, value=2, step=1)
+    with col_r3:
+        garage_cars = st.selectbox("🚗 Gara", options=[0, 1, 2, 3, 4], index=2)
 
-    st.subheader("2. Quy mô & Công năng")
-    col_s1, col_s2 = st.columns(2)
-    with col_s1:
-        so_tang = st.selectbox("🏢 Số tầng", options=[1, 2, 3, 4, 5], index=2)
-        so_phong_ngu = st.number_input("🛏️ Phòng ngủ", min_value=1, max_value=10, value=3, step=1)
-    with col_s2:
-        so_phong_wc = st.number_input("🚿 Phòng WC", min_value=1, max_value=10, value=3, step=1)
-        tuoi_nha = st.number_input("⏳ Tuổi nhà (năm)", min_value=0, max_value=40, value=2, step=1)
-
-    st.subheader("3. Nội thất & Pháp lý")
-    noi_that_label = st.selectbox(
-        "🛋️ Mức độ hoàn thiện nội thất",
-        options=list(NOI_THAT_REVERSE.keys()),
-        index=1
-    )
-    noi_that = NOI_THAT_REVERSE[noi_that_label]
-
-    co_gara = st.checkbox("🚗 Có gara / chỗ đỗ ô tô trong nhà", value=(do_rong_duong >= 4.5 and mat_tien >= 4.0))
-    gan_tien_ich = st.checkbox("🏫 Gần trường học, bệnh viện, chợ/siêu thị", value=True)
-    phap_ly = st.checkbox("📜 Pháp lý chuẩn (Sổ hồng / Sổ đỏ riêng)", value=True)
+    central_air = st.checkbox("❄️ Có điều hòa & sưởi trung tâm (Central Air/HVAC)", value=True)
 
 user_input = pd.DataFrame([{
-    "DienTich_m2": float(dien_tich),
-    "MatTien_m": float(mat_tien),
-    "KhuVuc": int(khu_vuc),
-    "DoRongDuong_m": float(do_rong_duong),
-    "SoTang": int(so_tang),
-    "SoPhongNgu": int(so_phong_ngu),
-    "SoPhongWC": int(so_phong_wc),
-    "NoiThat": int(noi_that),
-    "HuongNha": int(huong_nha),
-    "TuoiNha_Nam": int(tuoi_nha),
-    "CoGaraOto": int(co_gara),
-    "GanTienIch": int(gan_tien_ich),
-    "PhapLy_SoHong": int(phap_ly)
+    "GrLivArea": float(gr_liv_area),
+    "LotArea": float(lot_area),
+    "TotalBsmtSF": float(total_bsmt_sf),
+    "NeighborhoodTier": int(nb_tier),
+    "OverallQual": int(overall_qual),
+    "YearBuilt": int(year_built),
+    "BedroomAbvGr": int(bedrooms),
+    "FullBath": int(full_bath),
+    "GarageCars": int(garage_cars),
+    "CentralAir": int(central_air)
 }])
 
-pred_price, low_price, high_price = predict_with_interval(model, user_input)
-tong_dien_tich_san = dien_tich * so_tang
-unit_price_dat = (pred_price * 1000) / dien_tich
-unit_price_san = (pred_price * 1000) / tong_dien_tich_san
-phi_sang_ten_uoc_tinh = round(pred_price * 0.025, 2)
-tong_chi_phi_lan_banh = round(pred_price + phi_sang_ten_uoc_tinh, 2)
-chenh_lech_ngan_sach = ngan_sach - tong_chi_phi_lan_banh
+pred_usd, low_usd, high_usd = predict_with_interval(model, user_input)
+closing_cost_usd = round(pred_usd * 0.025, 0)  # ~2.5% phí thủ tục sang tên/escrow tại Iowa
+total_cash_needed_usd = pred_usd + closing_cost_usd
+price_per_sqft = pred_usd / gr_liv_area
+price_per_m2_usd = pred_usd / (gr_liv_area * SQFT_TO_M2)
+pred_ty_vnd = (pred_usd * ty_gia_vnd) / 1e9
+budget_diff_usd = ngan_sach_usd - total_cash_needed_usd
 
 # ---------------------------------------------------------
-# 5. GIAO DIỆN CHÍNH & 6 TAB ỨNG DỤNG TOÀN DIỆN
+# 5. GIAO DIỆN CHÍNH & 6 TAB ỨNG DỤNG CHO THỊ TRƯỜNG AMES, IA
 # ---------------------------------------------------------
-st.markdown('<div class="main-header">🏠 Trợ Lý Định Giá & Tư Vấn Chọn Mua Nhà Thông Minh</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🏡 Trợ Lý Định Giá & Tư Vấn Chọn Mua Nhà Tại Ames, Iowa (Hoa Kỳ)</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-header">Định giá chính xác theo từng m², tính toán phương án vay trả góp, chấm điểm khảo sát thực tế và so sánh đa phương án.</div>',
+    '<div class="sub-header">Định giá chuẩn thị trường Ames, IA ($ USD & sq ft), quy đổi trực quan sang m² & VNĐ, tính vay Mortgage PITI (gồm thuế đất Story County) và checklist kiểm định nhà Mỹ.</div>',
     unsafe_allow_html=True
 )
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 1. Định Giá & Phân Tích m²",
-    "🔍 2. Lọc & Gợi Ý Nhà Phù Hợp",
-    "🏦 3. Tính Vay & Trả Góp",
-    "📋 4. Chấm Điểm & Checklist",
-    "⚖️ 5. So Sánh Phương Án",
-    "📁 6. Dữ Liệu & Tải File"
+    "📊 1. Định Giá Ames, IA",
+    "🔍 2. Lọc & Gợi Ý Nhà",
+    "🏦 3. Tính Vay Mortgage (PITI)",
+    "📋 4. Chấm Điểm & Checklist Mỹ",
+    "⚖️ 5. So Sánh Các Căn",
+    "📁 6. Nạp File Nhóm 5"
 ])
 
 # =========================================================
-# TAB 1: ĐỊNH GIÁ & PHÂN TÍCH ĐA YẾU TỐ
+# TAB 1: ĐỊNH GIÁ & PHÂN TÍCH ĐA YẾU TỐ TẠI AMES, IOWA
 # =========================================================
 with tab1:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.metric(
-            label=f"Giá nhà dự đoán ({dien_tich:g} m² đất)",
-            value=f"{pred_price:.2f} Tỷ",
-            delta=f"Khoảng: {low_price:.2f} - {high_price:.2f} Tỷ",
+            label=f"Giá nhà dự đoán ({gr_liv_area:,} sq ft)",
+            value=f"${pred_usd:,.0f}",
+            delta=f"≈ {pred_ty_vnd:.2f} Tỷ VNĐ (${low_usd:,.0f} - ${high_usd:,.0f})",
             delta_color="off"
         )
     with c2:
         st.metric(
-            label="Tổng chi phí trọn gói (+2.5% phí)",
-            value=f"{tong_chi_phi_lan_banh:.2f} Tỷ",
-            delta=f"Thuế/phí sang tên: ~{phi_sang_ten_uoc_tinh:.2f} Tỷ",
+            label="Tổng chi phí trọn gói (+2.5% Closing)",
+            value=f"${total_cash_needed_usd:,.0f}",
+            delta=f"Phí thủ tục/sang tên: ~${closing_cost_usd:,.0f}",
             delta_color="off"
         )
     with c3:
         st.metric(
-            label=f"Đơn giá ({tong_dien_tich_san:g} m² sàn)",
-            value=f"{unit_price_dat:.1f} Tr/m² đất",
-            delta=f"~{unit_price_san:.1f} Tr/m² sàn sử dụng",
+            label=f"Đơn giá ({gr_liv_area * SQFT_TO_M2:.1f} m² sàn)",
+            value=f"${price_per_sqft:,.1f} / sq ft",
+            delta=f"≈ ${price_per_m2_usd:,.0f} / m² sàn ở",
             delta_color="off"
         )
     with c4:
         st.metric(
             label="Đối chiếu ngân sách trọn gói",
-            value=f"{abs(chenh_lech_ngan_sach):.2f} Tỷ",
-            delta="Dư ngân sách (An toàn)" if chenh_lech_ngan_sach >= 0 else "Vượt ngân sách dự kiến",
-            delta_color="normal" if chenh_lech_ngan_sach >= 0 else "inverse"
+            value=f"${abs(budget_diff_usd):,.0f}",
+            delta="Dư ngân sách (An toàn)" if budget_diff_usd >= 0 else "Vượt ngân sách dự kiến",
+            delta_color="normal" if budget_diff_usd >= 0 else "inverse"
         )
 
-    if chenh_lech_ngan_sach >= 0.3:
+    if budget_diff_usd >= 8000:
         st.success(
-            f"✅ **Khả thi cao:** Với ngân sách **{ngan_sach:.2f} Tỷ**, căn nhà **{dien_tich:g} m²** (mặt tiền **{mat_tien:g} m**, {so_tang} tầng, tổng **{tong_dien_tich_san:g} m² sàn**) tại *{khu_vuc_label}* hoàn toàn nằm trong khả năng tài chính, còn dư khoảng **{chenh_lech_ngan_sach:.2f} Tỷ** để dự phòng sắm sửa thêm."
+            f"✅ **Khả thi cao tại Ames, IA:** Với ngân sách **${ngan_sach_usd:,.0f}**, căn nhà tại phân khu *{nb_info['code']}* "
+            f"(**{gr_liv_area:,} sq ft ≈ {gr_liv_area * SQFT_TO_M2:.1f} m²**, tầng hầm **{total_bsmt_sf:,} sq ft**, gara **{garage_cars} xe**, "
+            f"chất lượng **{overall_qual}/10**) hoàn toàn nằm trong tầm tay, còn dư khoảng **${budget_diff_usd:,.0f}** cho chi phí sửa sang hoặc dự phòng."
         )
-    elif chenh_lech_ngan_sach >= 0:
+    elif budget_diff_usd >= 0:
         st.info(
-            f"ℹ️ **Sát ngân sách:** Tổng chi phí trọn gói (**{tong_chi_phi_lan_banh:.2f} Tỷ**) vừa khít ngân sách (**{ngan_sach:.2f} Tỷ**). Bạn nên đàm phán bớt 3–5% giá bán hoặc chuyển sang **Tab 3** để tính phương án vay bổ sung."
+            f"ℹ️ **Sát ngân sách:** Tổng chi phí cả phí thủ tục (**${total_cash_needed_usd:,.0f}**) vừa khít ngân sách (**${ngan_sach_usd:,.0f}**). "
+            "Tại thị trường Ames, IA, bạn có thể thương lượng người bán hỗ trợ một phần *Seller Concessions* (phí sang tên) hoặc xem phương án vay ở **Tab 3**."
         )
     else:
         st.warning(
-            f"⚠️ **Vượt ngân sách {abs(chenh_lech_ngan_sach):.2f} Tỷ:** Để mua đúng diện tích **{dien_tich:g} m²**, bạn có thể cân nhắc giảm 1 tầng xây dựng, chọn khu vực kế tiếp hoặc xem biểu đồ bên dưới để biết diện tích tối đa mua được trong tầm tiền."
+            f"⚠️ **Vượt ngân sách ${abs(budget_diff_usd):,.0f}:** Để mua tại Ames trong tầm giá **${ngan_sach_usd:,.0f}**, bạn có thể cân nhắc "
+            "chọn phân khu lân cận như *College Creek / NW Ames / Old Town*, giảm bớt diện tích sàn hoặc xem biểu đồ bên dưới để biết diện tích tối đa mua được."
         )
 
-    col_btn1, _ = st.columns([1.4, 3])
+    col_btn1, _ = st.columns([1.5, 3])
     with col_btn1:
-        if st.button("➕ Lưu phương án này vào bảng so sánh", use_container_width=True):
-            st.session_state.saved_houses.append({
-                "Tên phương án": ten_phuong_an,
-                "DT đất (m²)": dien_tich,
-                "DT sàn (m²)": tong_dien_tich_san,
-                "Mặt tiền (m)": mat_tien,
-                "Khu vực": khu_vuc_label.split(":")[0],
-                "Đường (m)": do_rong_duong,
-                "Hướng": huong_nha_label.split("(")[0].strip(),
-                "Tầng / PN": f"{so_tang}T - {so_phong_ngu}PN",
-                "Sổ hồng": "Có" if phap_ly else "Chưa",
-                "Giá dự đoán (Tỷ)": round(pred_price, 2),
-                "Trọn gói (Tỷ)": tong_chi_phi_lan_banh,
-                "Đơn giá (Tr/m²)": round(unit_price_dat, 1),
-                "Dư/Thiếu NS (Tỷ)": round(chenh_lech_ngan_sach, 2)
+        if st.button("➕ Lưu căn nhà này vào bảng so sánh", use_container_width=True):
+            ten_hien_thi = ten_phuong_an.strip() or f"Căn #{len(st.session_state.saved_ames_houses) + 1}"
+            st.session_state.saved_ames_houses.append({
+                "Tên phương án": ten_hien_thi,
+                "Phân khu": nb_info["code"],
+                "Sàn ở (sq ft)": int(gr_liv_area),
+                "Quy đổi (m²)": round(gr_liv_area * SQFT_TO_M2, 1),
+                "Tầng hầm (sq ft)": int(total_bsmt_sf),
+                "Chất lượng": f"{overall_qual}/10",
+                "Năm XD": int(year_built),
+                "Gara": f"{garage_cars} xe",
+                "Giá dự đoán ($)": round(pred_usd, 0),
+                "Trọn gói ($)": round(total_cash_needed_usd, 0),
+                "Đơn giá ($/sq ft)": round(price_per_sqft, 1),
+                "Dư/Thiếu NS ($)": round(budget_diff_usd, 0)
             })
-            st.toast(f"Đã lưu '{ten_phuong_an}' sang Tab 5!", icon="✅")
+            st.toast(f"Đã lưu '{ten_hien_thi}' sang Tab 5!", icon="✅")
 
     st.divider()
 
     chart_col1, chart_col2 = st.columns(2)
     with chart_col1:
-        st.subheader("📈 Biến thiên giá theo Diện tích (m²)")
-        st.caption("Giữ nguyên các tiêu chí khác, khảo sát mức giá từ 30 m² đến 200 m²:")
+        st.subheader("📈 Biến thiên giá theo Diện tích (sq ft)")
+        st.caption(f"Khảo sát mức giá tại phân khu {nb_info['code']} từ 800 sq ft (~74 m²) đến 3,200 sq ft (~297 m²):")
 
-        area_grid = np.arange(30, 205, 5)
-        sim_df = pd.concat([user_input] * len(area_grid), ignore_index=True)
-        sim_df["DienTich_m2"] = area_grid
+        sqft_grid = np.arange(800, 3250, 100)
+        sim_df = pd.concat([user_input] * len(sqft_grid), ignore_index=True)
+        sim_df["GrLivArea"] = sqft_grid
         sim_prices = model.predict(sim_df)
 
         fig_area = go.Figure()
         fig_area.add_trace(go.Scatter(
-            x=area_grid, y=sim_prices,
-            mode="lines", name="Giá nhà dự đoán",
+            x=sqft_grid, y=sim_prices,
+            mode="lines", name="Giá nhà dự đoán ($)",
             line=dict(color="#2563EB", width=3)
         ))
         fig_area.add_trace(go.Scatter(
-            x=[dien_tich], y=[pred_price],
-            mode="markers+text", name="Lựa chọn hiện tại",
-            text=[f"{dien_tich:g} m² ({pred_price:.2f} Tỷ)"],
+            x=[gr_liv_area], y=[pred_usd],
+            mode="markers+text", name="Căn đang chọn",
+            text=[f"{gr_liv_area:,} sq ft (${pred_usd:,.0f})"],
             textposition="top left",
             marker=dict(color="#DC2626", size=12, symbol="diamond")
         ))
         fig_area.add_hline(
-            y=ngan_sach, line_dash="dash", line_color="#16A34A",
-            annotation_text=f"Ngân sách: {ngan_sach:.2f} Tỷ",
+            y=ngan_sach_usd, line_dash="dash", line_color="#16A34A",
+            annotation_text=f"Ngân sách: ${ngan_sach_usd:,.0f}",
             annotation_position="bottom right"
         )
         fig_area.update_layout(
-            xaxis_title="Diện tích đất (m²)",
-            yaxis_title="Giá dự đoán (Tỷ VNĐ)",
+            xaxis_title="Diện tích sàn sinh hoạt (sq ft)",
+            yaxis_title="Giá dự đoán ($ USD)",
             height=380,
             margin=dict(l=20, r=20, t=30, b=20),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         st.plotly_chart(fig_area, use_container_width=True)
 
-        affordable_areas = area_grid[sim_prices <= ngan_sach]
-        if len(affordable_areas) > 0:
-            st.caption(f"💡 Với cấu hình hiện tại và ngân sách **{ngan_sach:.2f} Tỷ**, diện tích tối đa bạn có thể chọn là khoảng **{affordable_areas.max()} m²**.")
+        affordable_sqft = sqft_grid[sim_prices <= ngan_sach_usd]
+        if len(affordable_sqft) > 0:
+            max_sf = int(affordable_sqft.max())
+            st.caption(f"💡 Với cấu hình hiện tại và ngân sách **${ngan_sach_usd:,.0f}**, diện tích tối đa bạn có thể chọn là khoảng **{max_sf:,} sq ft** (≈ **{max_sf * SQFT_TO_M2:.1f} m²**).")
         else:
-            st.caption(f"💡 Với cấu hình hiện tại, mức 30 m² cũng vượt ngân sách **{ngan_sach:.2f} Tỷ**.")
+            st.caption(f"💡 Với cấu hình hiện tại, mức 800 sq ft cũng vượt ngân sách **${ngan_sach_usd:,.0f}**.")
 
     with chart_col2:
-        st.subheader("🧩 Mức độ ảnh hưởng của 13 yếu tố")
-        st.caption(f"Độ chính xác mô hình trên dữ liệu kiểm thử: R² = {model_r2*100:.1f}% (Sai số TB ±{model_mae:.2f} Tỷ):")
+        st.subheader("🧩 Mức độ ảnh hưởng của 10 đặc trưng Ames Housing")
+        st.caption(f"Độ chính xác mô hình trên dữ liệu kiểm thử: R² = {model_r2*100:.1f}% (Sai số TB ±${model_mae:,.0f}):")
 
         label_vn = {
-            "DienTich_m2": "Diện tích đất (m²)",
-            "MatTien_m": "Bề rộng mặt tiền (m)",
-            "KhuVuc": "Vị trí / Khu vực",
-            "DoRongDuong_m": "Độ rộng đường/hẻm",
-            "SoTang": "Số tầng xây dựng",
-            "SoPhongNgu": "Số phòng ngủ",
-            "SoPhongWC": "Số phòng WC",
-            "NoiThat": "Chất lượng nội thất",
-            "HuongNha": "Hướng nhà",
-            "TuoiNha_Nam": "Tuổi thọ ngôi nhà",
-            "CoGaraOto": "Gara ô tô",
-            "GanTienIch": "Gần tiện ích công cộng",
-            "PhapLy_SoHong": "Pháp lý (Sổ hồng)"
+            "GrLivArea": "Diện tích sàn ở (GrLivArea)",
+            "LotArea": "Diện tích khuôn viên (LotArea)",
+            "TotalBsmtSF": "Diện tích tầng hầm (Basement)",
+            "NeighborhoodTier": "Phân khu tại Ames (Neighborhood)",
+            "OverallQual": "Chất lượng tổng thể (1–10)",
+            "YearBuilt": "Năm xây dựng (YearBuilt)",
+            "BedroomAbvGr": "Số phòng ngủ",
+            "FullBath": "Số phòng tắm đầy đủ",
+            "GarageCars": "Sức chứa Gara (GarageCars)",
+            "CentralAir": "Điều hòa & sưởi trung tâm"
         }
         imp_df = pd.DataFrame({
             "Yếu tố": [label_vn[c] for c in feature_cols],
             "Tầm quan trọng (%)": model.feature_importances_ * 100
         }).sort_values("Tầm quan trọng (%)", ascending=True)
 
-        fig_imp = px.bar(
-            imp_df, x="Tầm quan trọng (%)", y="Yếu tố", orientation="h",
+        fig_imp = go.Figure(go.Bar(
+            x=imp_df["Tầm quan trọng (%)"],
+            y=imp_df["Yếu tố"],
+            orientation="h",
             text=imp_df["Tầm quan trọng (%)"].apply(lambda x: f"{x:.1f}%"),
-            color="Tầm quan trọng (%)", color_continuous_scale="Blues"
-        )
+            textposition="outside",
+            marker_color="#2563EB"
+        ))
         fig_imp.update_layout(
             height=380,
-            margin=dict(l=20, r=20, t=30, b=20),
-            coloraxis_showscale=False,
+            margin=dict(l=20, r=45, t=30, b=20),
             xaxis_title="Tỷ trọng tác động (%)",
             yaxis_title=""
         )
         st.plotly_chart(fig_imp, use_container_width=True)
 
-    st.subheader("🔄 Bảng Giả Định: Nếu Điều Chỉnh 1 Tiêu Chí Thì Giá Thay Đổi Bao Nhiêu?")
+    st.subheader("🔄 Bảng Giả Định: Nếu Điều Chỉnh 1 Tiêu Chí Tại Ames Thì Giá Thay Đổi Bao Nhiêu?")
     scenarios = []
-    s_plus10 = user_input.copy(); s_plus10["DienTich_m2"] += 10
-    p_plus10 = model.predict(s_plus10)[0]
-    scenarios.append(("Tăng thêm +10 m² diện tích", f"{dien_tich + 10:g} m²", p_plus10, p_plus10 - pred_price))
+    s_plus200 = user_input.copy(); s_plus200["GrLivArea"] += 200
+    p_plus200 = model.predict(s_plus200)[0]
+    scenarios.append(("Mở rộng thêm +200 sq ft (~18.6 m²) sàn ở", f"{gr_liv_area + 200:,} sq ft", p_plus200, p_plus200 - pred_usd))
 
-    if dien_tich > 30:
-        s_minus10 = user_input.copy(); s_minus10["DienTich_m2"] = max(20.0, dien_tich - 10)
-        p_minus10 = model.predict(s_minus10)[0]
-        scenarios.append(("Giảm bớt -10 m² diện tích", f"{s_minus10['DienTich_m2'].iloc[0]:g} m²", p_minus10, p_minus10 - pred_price))
+    if overall_qual < 10:
+        s_q = user_input.copy(); s_q["OverallQual"] = overall_qual + 1
+        p_q = model.predict(s_q)[0]
+        scenarios.append(("Nâng cấp chất lượng hoàn thiện +1 bậc", f"{overall_qual + 1}/10 điểm", p_q, p_q - pred_usd))
 
-    s_mt = user_input.copy(); s_mt["MatTien_m"] = mat_tien + 1.0
-    p_mt = model.predict(s_mt)[0]
-    scenarios.append(("Mở rộng mặt tiền thêm +1.0 m", f"{mat_tien + 1.0:g} m", p_mt, p_mt - pred_price))
+    if nb_tier > 1:
+        s_nb = user_input.copy(); s_nb["NeighborhoodTier"] = nb_tier - 1
+        p_nb = model.predict(s_nb)[0]
+        scenarios.append(("Chuyển sang phân khu kế tiếp (giá mềm hơn)", TIER_TO_LABEL[nb_tier - 1], p_nb, p_nb - pred_usd))
 
-    if khu_vuc < 4:
-        s_kv = user_input.copy(); s_kv["KhuVuc"] = khu_vuc + 1
-        p_kv = model.predict(s_kv)[0]
-        scenarios.append(("Chuyển sang khu vực kế tiếp (xa trung tâm hơn)", KHU_VUC_MAP[khu_vuc + 1].split(":")[0], p_kv, p_kv - pred_price))
+    s_g = user_input.copy(); s_g["GarageCars"] = min(4, garage_cars + 1)
+    if garage_cars < 4:
+        p_g = model.predict(s_g)[0]
+        scenarios.append(("Tăng sức chứa Gara thêm +1 ô tô", f"{garage_cars + 1} xe", p_g, p_g - pred_usd))
 
-    if so_tang > 1:
-        s_tang = user_input.copy(); s_tang["SoTang"] = so_tang - 1
-        p_tang = model.predict(s_tang)[0]
-        scenarios.append(("Giảm bớt 1 tầng xây dựng", f"{so_tang - 1} tầng", p_tang, p_tang - pred_price))
-
-    df_scen = pd.DataFrame(scenarios, columns=["Kịch bản điều chỉnh", "Thông số mới", "Giá dự đoán mới (Tỷ)", "Chênh lệch (Tỷ)"])
+    df_scen = pd.DataFrame(scenarios, columns=["Kịch bản điều chỉnh", "Thông số mới", "Giá dự đoán mới ($)", "Chênh lệch ($)"])
     st.dataframe(
-        df_scen.style.format({"Giá dự đoán mới (Tỷ)": "{:.2f}", "Chênh lệch (Tỷ)": "{:+.2f}"}),
+        df_scen.style.format({"Giá dự đoán mới ($)": "${:,.0f}", "Chênh lệch ($)": "${:+,.0f}"}),
         use_container_width=True,
         hide_index=True
     )
 
 # =========================================================
-# TAB 2: LỌC & GỢI Ý NHÀ THEO m² & TIÊU CHÍ
+# TAB 2: LỌC & GỢI Ý NHÀ TẠI AMES, IOWA THEO TIÊU CHÍ
 # =========================================================
 with tab2:
-    st.subheader("🔍 Bộ Lọc Tìm Kiếm & Chấm Điểm Nhà Phù Hợp")
-    st.caption("Lọc danh sách nhà trên thị trường theo đúng khoảng mét vuông, mặt tiền, hướng nhà và ngân sách của bạn:")
+    st.subheader("🔍 Bộ Lọc Tìm Kiếm Nhà Phù Hợp Tại Thành Phố Ames, Iowa")
+    st.caption("Lọc danh sách nhà theo khoảng diện tích sq ft, phân khu, số gara ô tô và ngân sách USD của bạn:")
 
     f1, f2, f3, f4, f5 = st.columns(5)
     with f1:
-        min_m2, max_m2 = st.slider("Khoảng diện tích (m²)", 25, 220, (55, 85))
+        min_sf, max_sf = st.slider("Diện tích sàn (sq ft)", 700, 3500, (1300, 2100), step=50)
     with f2:
-        max_budget = st.number_input("Ngân sách tối đa (Tỷ)", 1.0, 100.0, float(ngan_sach), step=0.2)
+        max_b_usd = st.number_input("Ngân sách tối đa ($)", 80000, 1500000, int(ngan_sach_usd), step=5000)
     with f3:
-        min_mt = st.number_input("Mặt tiền tối thiểu (m)", 3.0, 15.0, 4.0, step=0.5)
+        min_qual = st.slider("Chất lượng tối thiểu (1–10)", 1, 10, 6)
     with f4:
-        min_pn = st.selectbox("Phòng ngủ tối thiểu", [1, 2, 3, 4, 5], index=1)
+        min_gara = st.selectbox("Gara tối thiểu (xe)", [0, 1, 2, 3], index=2)
     with f5:
-        chi_so_hong = st.selectbox("Pháp lý", ["Chỉ lấy Sổ hồng", "Tất cả"], index=0)
+        min_yr = st.number_input("Xây từ năm trở lại đây", 1920, 2026, 1990, step=5)
 
     filtered = df_market[
-        (df_market["DienTich_m2"] >= min_m2) &
-        (df_market["DienTich_m2"] <= max_m2) &
-        (df_market["GiaNha_TyVND"] <= max_budget) &
-        (df_market["MatTien_m"] >= min_mt) &
-        (df_market["SoPhongNgu"] >= min_pn)
+        (df_market["GrLivArea"] >= min_sf) &
+        (df_market["GrLivArea"] <= max_sf) &
+        (df_market["SalePrice"] <= max_b_usd) &
+        (df_market["OverallQual"] >= min_qual) &
+        (df_market["GarageCars"] >= min_gara) &
+        (df_market["YearBuilt"] >= min_yr)
     ].copy()
 
-    if chi_so_hong == "Chỉ lấy Sổ hồng":
-        filtered = filtered[filtered["PhapLy_SoHong"] == 1]
-
     if len(filtered) == 0:
-        st.warning("Chưa có căn nhà nào khớp đồng thời mọi điều kiện lọc. Hãy thử nới rộng khoảng diện tích (m²) hoặc ngân sách.")
+        st.warning("Chưa có căn nhà nào tại Ames khớp đồng thời mọi điều kiện lọc. Hãy thử nới rộng khoảng sq ft, năm xây dựng hoặc ngân sách.")
     else:
-        filtered["DonGia_Tr_m2"] = np.round((filtered["GiaNha_TyVND"] * 1000) / filtered["DienTich_m2"], 1)
-        filtered["TietKiem_Ty"] = np.round(max_budget - filtered["GiaNha_TyVND"], 2)
+        filtered["DienTich_m2"] = np.round(filtered["GrLivArea"] * SQFT_TO_M2, 1)
+        filtered["DonGia_SqFt"] = np.round(filtered["SalePrice"] / filtered["GrLivArea"], 1)
+        filtered["DuNganSach_USD"] = np.round(max_b_usd - filtered["SalePrice"], 0)
 
-        score_area = (filtered["DienTich_m2"] - min_m2) / max(1, (max_m2 - min_m2)) * 25
-        score_loc = (5 - filtered["KhuVuc"]) / 4 * 25
-        score_road = np.minimum(filtered["DoRongDuong_m"] / 10, 1.0) * 20
-        score_front = np.minimum(filtered["MatTien_m"] / 8, 1.0) * 15
-        score_orient = (filtered["HuongNha"] / 3) * 15
-        filtered["DiemPhuHop"] = np.round(score_area + score_loc + score_road + score_front + score_orient, 1)
+        s_area = (filtered["GrLivArea"] - min_sf) / max(1, (max_sf - min_sf)) * 25
+        s_loc = (filtered["NeighborhoodTier"] / 5) * 25
+        s_qual = (filtered["OverallQual"] / 10) * 25
+        s_bsmt = np.minimum(filtered["TotalBsmtSF"] / 1500, 1.0) * 15
+        s_yr = np.clip((filtered["YearBuilt"] - 1950) / 76, 0, 1) * 10
+        filtered["DiemPhuHop"] = np.round(s_area + s_loc + s_qual + s_bsmt + s_yr, 1)
 
         top_matches = filtered.sort_values("DiemPhuHop", ascending=False).head(20).copy()
-        top_matches["KhuVuc_Ten"] = top_matches["KhuVuc"].map(lambda x: KHU_VUC_MAP[x].split(":")[0])
-        top_matches["Huong_Ten"] = top_matches["HuongNha"].map(lambda x: HUONG_NHA_MAP[x].split("(")[0].strip())
-        top_matches["Gara"] = top_matches["CoGaraOto"].map({1: "Có", 0: "Không"})
+        top_matches["PhanKhu"] = top_matches["NeighborhoodTier"].map(TIER_TO_LABEL)
 
-        st.success(f"Tìm thấy **{len(filtered)}** căn nhà thỏa mãn tiêu chí! Dưới đây là **Top {len(top_matches)} lựa chọn tối ưu nhất**:")
+        st.success(f"Tìm thấy **{len(filtered)}** căn nhà tại Ames, IA thỏa mãn tiêu chí! Dưới đây là **Top {len(top_matches)} lựa chọn tối ưu nhất**:")
 
         display_cols = [
-            "DiemPhuHop", "DienTich_m2", "MatTien_m", "GiaNha_TyVND", "DonGia_Tr_m2",
-            "KhuVuc_Ten", "DoRongDuong_m", "Huong_Ten", "SoTang", "SoPhongNgu",
-            "TuoiNha_Nam", "Gara", "TietKiem_Ty"
+            "DiemPhuHop", "PhanKhu", "GrLivArea", "DienTich_m2", "TotalBsmtSF",
+            "SalePrice", "DonGia_SqFt", "OverallQual", "YearBuilt", "BedroomAbvGr",
+            "GarageCars", "DuNganSach_USD"
         ]
         rename_cols = {
             "DiemPhuHop": "Điểm (/100)",
-            "DienTich_m2": "Diện tích (m²)",
-            "MatTien_m": "Mặt tiền (m)",
-            "GiaNha_TyVND": "Giá bán (Tỷ)",
-            "DonGia_Tr_m2": "Đơn giá (Tr/m²)",
-            "KhuVuc_Ten": "Khu vực",
-            "DoRongDuong_m": "Đường (m)",
-            "Huong_Ten": "Hướng nhà",
-            "SoTang": "Tầng",
-            "SoPhongNgu": "Phòng ngủ",
-            "TuoiNha_Nam": "Tuổi nhà",
-            "Gara": "Gara",
-            "TietKiem_Ty": "Dư ngân sách (Tỷ)"
+            "PhanKhu": "Phân khu Ames",
+            "GrLivArea": "Sàn ở (sq ft)",
+            "DienTich_m2": "Quy đổi (m²)",
+            "TotalBsmtSF": "Tầng hầm (sq ft)",
+            "SalePrice": "Giá bán ($)",
+            "DonGia_SqFt": "$ / sq ft",
+            "OverallQual": "Chất lượng",
+            "YearBuilt": "Năm XD",
+            "BedroomAbvGr": "Phòng ngủ",
+            "GarageCars": "Gara (xe)",
+            "DuNganSach_USD": "Dư ngân sách ($)"
         }
         st.dataframe(top_matches[display_cols].rename(columns=rename_cols), use_container_width=True, hide_index=True)
 
 # =========================================================
-# TAB 3: BÀI TOÁN TÀI CHÍNH & VAY TRẢ GÓP NGÂN HÀNG
+# TAB 3: TÍNH VAY MORTGAGE CHUẨN MỸ (PITI + THUẾ STORY COUNTY, IA)
 # =========================================================
 with tab3:
-    st.subheader("🏦 Mô Phỏng Vay Mua Nhà & Kiểm Tra Sức Khỏe Tài Chính")
-    st.caption(f"Tính toán dòng tiền trả nợ dựa trên giá trị căn nhà đang chọn: **{pred_price:.2f} Tỷ VNĐ** (Trọn gói: **{tong_chi_phi_lan_banh:.2f} Tỷ VNĐ**).")
+    st.subheader("🏦 Mô Phỏng Vay Mua Nhà Tại Mỹ (US Mortgage PITI Calculator)")
+    st.caption(
+        f"Tính toán chi phí hàng tháng thực tế tại Ames, Story County, Iowa cho căn nhà trị giá **${pred_usd:,.0f}** "
+        "(bao gồm Gốc + Lãi + Thuế bất động sản bang Iowa ~1.55%/năm + Bảo hiểm nhà + PMI nếu trả trước < 20%)."
+    )
 
-    m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-    with m_col1:
-        ty_le_von = st.slider("Tỷ lệ vốn tự có sẵn sàng (%)", 20, 90, 40, step=5)
-    with m_col2:
-        thoi_han_vay = st.slider("Thời hạn vay ngân hàng (năm)", 5, 30, 15, step=1)
-    with m_col3:
-        lai_suat_nam = st.number_input("Lãi suất vay trung bình (%/năm)", 4.0, 18.0, 8.5, step=0.2)
-    with m_col4:
-        thu_nhap_thang = st.number_input("Tổng thu nhập gia đình (Triệu/tháng)", 10.0, 500.0, 45.0, step=2.0)
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        down_pct = st.slider("Trả trước (Down Payment %)", 5, 80, 20, step=5)
+    with m2:
+        loan_years = st.selectbox("Kỳ hạn vay cố định (Fixed-Rate)", [30, 15, 20], index=0)
+    with m3:
+        apr = st.number_input("Lãi suất vay Mortgage (%/năm)", 3.5, 11.0, 6.4, step=0.1)
+    with m4:
+        gross_monthly_income = st.number_input("Thu nhập hộ gia đình ($/tháng)", 2500, 40000, 9500, step=250)
 
-    von_tu_co = round(pred_price * (ty_le_von / 100.0), 2)
-    so_tien_vay = round(pred_price - von_tu_co, 2)
-    so_thang = thoi_han_vay * 12
-    r_thang = (lai_suat_nam / 100.0) / 12.0
+    down_payment_usd = pred_usd * (down_pct / 100.0)
+    loan_amount_usd = pred_usd - down_payment_usd
+    n_months = loan_years * 12
+    r_month = (apr / 100.0) / 12.0
 
-    goc_hang_thang_trieu = (so_tien_vay * 1000.0) / so_thang
-    lai_thang_dau_trieu = (so_tien_vay * 1000.0) * r_thang
-    tra_thang_dau_trieu = goc_hang_thang_trieu + lai_thang_dau_trieu
-    tong_lai_ty = ((so_tien_vay * r_thang) * (so_thang + 1)) / 2.0
-    ty_le_tra_no_thu_nhap = (tra_thang_dau_trieu / thu_nhap_thang) * 100.0
+    if loan_amount_usd > 0 and r_month > 0:
+        pi_monthly = loan_amount_usd * (r_month * (1 + r_month) ** n_months) / ((1 + r_month) ** n_months - 1)
+    else:
+        pi_monthly = loan_amount_usd / max(1, n_months)
+
+    prop_tax_monthly = (pred_usd * 0.0155) / 12.0
+    home_ins_monthly = 1450.0 / 12.0
+    pmi_monthly = (loan_amount_usd * 0.006) / 12.0 if down_pct < 20 else 0.0
+    total_piti_monthly = pi_monthly + prop_tax_monthly + home_ins_monthly + pmi_monthly
+    dti_front_end = (total_piti_monthly / gross_monthly_income) * 100.0
 
     k1, k2, k3, k4 = st.columns(4)
     with k1:
-        st.metric("Vốn tự có cần chuẩn bị", f"{von_tu_co:.2f} Tỷ", delta=f"+{phi_sang_ten_uoc_tinh:.2f} Tỷ phí sang tên", delta_color="off")
+        st.metric(
+            "Tiền mặt cần chuẩn bị ban đầu",
+            f"${down_payment_usd + closing_cost_usd:,.0f}",
+            delta=f"Down ${down_payment_usd:,.0f} + Closing ${closing_cost_usd:,.0f}",
+            delta_color="off"
+        )
     with k2:
-        st.metric("Số tiền cần vay ngân hàng", f"{so_tien_vay:.2f} Tỷ", delta=f"Chiếm {100 - ty_le_von}% giá trị nhà", delta_color="off")
+        st.metric(
+            "Khoản vay ngân hàng (Loan)",
+            f"${loan_amount_usd:,.0f}",
+            delta=f"LTV: {100 - down_pct}% giá trị nhà",
+            delta_color="off"
+        )
     with k3:
-        st.metric("Tiền trả tháng đầu tiên", f"{tra_thang_dau_trieu:.1f} Tr/tháng", delta=f"Gốc {goc_hang_thang_trieu:.1f} Tr + Lãi {lai_thang_dau_trieu:.1f} Tr", delta_color="off")
+        st.metric(
+            "Tổng trả hàng tháng (PITI)",
+            f"${total_piti_monthly:,.0f} / tháng",
+            delta=f"Gốc+Lãi ${pi_monthly:,.0f} | Thuế+BH ${prop_tax_monthly + home_ins_monthly + pmi_monthly:,.0f}",
+            delta_color="off"
+        )
     with k4:
         st.metric(
-            "Áp lực trả nợ / Thu nhập",
-            f"{ty_le_tra_no_thu_nhap:.1f}%",
-            delta="An toàn (≤ 40% thu nhập)" if ty_le_tra_no_thu_nhap <= 40 else "Áp lực cao (> 40% thu nhập)",
-            delta_color="normal" if ty_le_tra_no_thu_nhap <= 40 else "inverse"
+            "Tỷ lệ PITI / Thu nhập (28% Rule)",
+            f"{dti_front_end:.1f}%",
+            delta="Chuẩn an toàn Mỹ (≤ 28%)" if dti_front_end <= 28 else "Vượt ngưỡng 28% thu nhập",
+            delta_color="normal" if dti_front_end <= 28 else "inverse"
         )
 
-    if ty_le_tra_no_thu_nhap <= 40:
-        st.success(f"✅ **Tỷ lệ tài chính an toàn ({ty_le_tra_no_thu_nhap:.1f}%):** Khoản trả nợ tháng đầu **{tra_thang_dau_trieu:.1f} Triệu** chiếm dưới 40% thu nhập, đảm bảo gia đình vẫn thoải mái chi tiêu sinh hoạt. Tổng tiền lãi ước tính trong {thoi_han_vay} năm là **{tong_lai_ty:.2f} Tỷ**.")
+    if down_pct < 20:
+        st.info(f"ℹ️ Vì mức trả trước **{down_pct}%** dưới ngưỡng 20%, khoản vay tại Mỹ phát sinh thêm bảo hiểm **PMI ~${pmi_monthly:,.0f}/tháng** cho đến khi bạn trả được 20% giá trị căn nhà.")
+
+    if dti_front_end <= 28:
+        st.success(f"✅ **Đạt chuẩn duyệt vay ngân hàng Mỹ ({dti_front_end:.1f}% ≤ 28%):** Tổng chi phí nhà ở hàng tháng **${total_piti_monthly:,.0f}** (đã gồm thuế đất Story County, IA) hoàn toàn nằm trong vùng an toàn tài chính.")
     else:
-        st.warning(f"⚠️ **Cảnh báo áp lực tài chính ({ty_le_tra_no_thu_nhap:.1f}%):** Tiền trả tháng đầu chiếm quá 40% thu nhập. Bạn nên tăng vốn tự có lên mức **50–60%**, kéo dài thời hạn vay lên **20–25 năm** hoặc chọn căn diện tích nhỏ hơn.")
+        st.warning(f"⚠️ **Vượt quy tắc 28% ({dti_front_end:.1f}%):** Ngân hàng Mỹ thường khuyến nghị PITI ≤ 28% thu nhập gộp. Bạn có thể tăng Down Payment lên **20–25%**, chọn kỳ hạn **30 năm** hoặc giảm mức giá mục tiêu.")
 
-    years = np.arange(1, thoi_han_vay + 1)
-    annual_principal, annual_interest = [], []
-    remaining_loan = so_tien_vay * 1000.0
-    for _ in years:
-        y_p, y_i = 0.0, 0.0
-        for _ in range(12):
-            interest_m = remaining_loan * r_thang
-            y_p += goc_hang_thang_trieu
-            y_i += interest_m
-            remaining_loan = max(0.0, remaining_loan - goc_hang_thang_trieu)
-        annual_principal.append(round(y_p, 1))
-        annual_interest.append(round(y_i, 1))
-
-    df_loan = pd.DataFrame({
-        "Năm": [f"Năm {y}" for y in years],
-        "Tiền gốc trả (Triệu)": annual_principal,
-        "Tiền lãi trả (Triệu)": annual_interest
-    })
-    fig_loan = px.bar(
-        df_loan, x="Năm", y=["Tiền gốc trả (Triệu)", "Tiền lãi trả (Triệu)"],
-        title="Biểu đồ nghĩa vụ trả Gốc & Lãi hàng năm (Dư nợ giảm dần)",
-        color_discrete_sequence=["#2563EB", "#F59E0B"]
+    fig_piti = go.Figure(go.Pie(
+        labels=["Gốc & Lãi vay (P&I)", "Thuế BĐS Story County (1.55%)", "Bảo hiểm nhà ở", "Bảo hiểm khoản vay (PMI)"],
+        values=[round(pi_monthly, 1), round(prop_tax_monthly, 1), round(home_ins_monthly, 1), round(pmi_monthly, 1)],
+        hole=0.45,
+        marker_colors=["#2563EB", "#0EA5E9", "#10B981", "#F59E0B"]
+    ))
+    fig_piti.update_layout(
+        title=f"Cơ cấu chi phí nhà ở hàng tháng tại Ames, IA (Tổng: ${total_piti_monthly:,.0f}/tháng)",
+        height=350,
+        margin=dict(l=20, r=20, t=45, b=20)
     )
-    fig_loan.update_layout(height=360, margin=dict(l=20, r=20, t=40, b=20))
-    st.plotly_chart(fig_loan, use_container_width=True)
+    st.plotly_chart(fig_piti, use_container_width=True)
 
 # =========================================================
-# TAB 4: CHẤM ĐIỂM NGÔI NHÀ & CHECKLIST KHẢO SÁT THỰC TẾ
+# TAB 4: CHẤM ĐIỂM & CHECKLIST KIỂM ĐỊNH NHÀ TẠI AMES, IOWA
 # =========================================================
 with tab4:
-    st.subheader("📋 Chấm Điểm Đánh Giá & Checklist Khi Đi Xem Nhà Thực Tế")
+    st.subheader("📋 Chấm Điểm Đánh Giá & Checklist Kiểm Định Nhà (Home Inspection) Tại Iowa")
     col_sc1, col_sc2 = st.columns([1.1, 1])
 
     with col_sc1:
-        st.markdown("#### 1. Biểu đồ đánh giá chất lượng toàn diện")
-        diem_vi_tri = round((5 - khu_vuc) / 4 * 60 + min(do_rong_duong / 8, 1.0) * 40, 1)
-        diem_phap_ly = 95.0 if phap_ly else 35.0
-        diem_phong_thuy = 92.0 if huong_nha == 3 else (75.0 if huong_nha == 2 else 55.0)
-        diem_xay_dung = round(max(40.0, 100.0 - tuoi_nha * 2.2) * 0.6 + (noi_that / 3) * 40, 1)
-        diem_tai_chinh = 95.0 if chenh_lech_ngan_sach >= 0.3 else (75.0 if chenh_lech_ngan_sach >= 0 else 45.0)
+        st.markdown("#### 1. Biểu đồ đánh giá chất lượng 5 trục")
+        s_loc = round((nb_tier / 5) * 100, 1)
+        s_qual = round((overall_qual / 10) * 100, 1)
+        s_bsmt = round(min(100.0, (total_bsmt_sf / max(1, gr_liv_area)) * 115), 1)
+        s_winter = round(min(100.0, (garage_cars / 3) * 65 + (35 if central_air else 0)), 1)
+        s_fin = 95.0 if budget_diff_usd >= 8000 else (75.0 if budget_diff_usd >= 0 else 45.0)
 
-        categories = ["Vị trí & Giao thông", "Pháp lý & Sổ hồng", "Hướng nhà & Thoáng khí", "Chất lượng & Nội thất", "Phù hợp tài chính"]
-        scores = [diem_vi_tri, diem_phap_ly, diem_phong_thuy, diem_xay_dung, diem_tai_chinh]
-        tong_diem_nha = round(float(np.mean(scores)), 1)
+        categories = ["Vị trí phân khu Ames", "Chất lượng vật liệu", "Tầng hầm (Basement)", "Tiện nghi mùa đông IA", "Phù hợp tài chính"]
+        scores = [s_loc, s_qual, s_bsmt, s_winter, s_fin]
+        avg_score = round(float(np.mean(scores)), 1)
 
         fig_radar = go.Figure(data=go.Scatterpolar(
             r=scores + [scores[0]],
@@ -729,88 +737,133 @@ with tab4:
             showlegend=False,
             height=360,
             margin=dict(l=40, r=40, t=30, b=30),
-            title=f"Điểm tổng hợp ngôi nhà: {tong_diem_nha} / 100 điểm"
+            title=f"Điểm tổng hợp căn nhà: {avg_score} / 100 điểm"
         )
         st.plotly_chart(fig_radar, use_container_width=True)
 
     with col_sc2:
-        st.markdown("#### 2. Checklist 8 bước bắt buộc khi đi xem nhà thực tế")
-        st.caption("Tích chọn các hạng mục bạn đã trực tiếp kiểm tra tại hiện trường:")
+        st.markdown("#### 2. Checklist 8 bước bắt buộc khi mua nhà tại Ames, IA")
+        st.caption("Các hạng mục đặc thù vùng Trung Tây Hoa Kỳ cần kiểm tra trước khi chốt hợp đồng:")
         checks = [
-            st.checkbox("1. Đối chiếu sổ hồng bản gốc, số tờ/số thửa và diện tích thực tế"),
-            st.checkbox("2. Kiểm tra thông tin quy hoạch tại UBND quận/huyện (không dính lộ giới/treo)"),
-            st.checkbox("3. Kiểm tra tình trạng tranh chấp, thế chấp ngân hàng hoặc đồng sở hữu"),
-            st.checkbox("4. Quan sát tường, trần nhà vệ sinh & sân thượng xem có thấm dột, nứt kết cấu"),
-            st.checkbox("5. Hỏi hàng xóm xung quanh về tình trạng ngập nước khi mưa lớn / triều cường"),
-            st.checkbox("6. Kiểm tra áp lực nước sinh hoạt, hệ thống điện và thoát nước thải"),
-            st.checkbox("7. Đo thực tế chiều rộng hẻm từ ngoài đường lớn vào đến cửa nhà"),
-            st.checkbox("8. Khảo sát môi trường sống, tiếng ồn và an ninh khu vực vào buổi tối")
+            st.checkbox("1. Đo nồng độ khí Radon (Radon Test) — Bắt buộc vì bang Iowa có mức Radon tự nhiên cao"),
+            st.checkbox("2. Kiểm tra nền móng tầng hầm (Basement), vết nứt tường & máy bơm chống ngập (Sump Pump)"),
+            st.checkbox("3. Kiểm tra lò sưởi (Furnace) & điều hòa HVAC hoạt động tốt cho mùa đông âm độ ở Iowa"),
+            st.checkbox("4. Kiểm tra mái ngói (Roof) & máng xối xem có hư hại do mưa đá (Hailstorm)"),
+            st.checkbox("5. Tra cứu bản đồ ngập lụt FEMA Flood Map (đặc biệt khu gần sông Skunk & suối Squaw Creek)"),
+            st.checkbox("6. Kiểm tra hệ thống ống thoát nước chính (Sewer Scope) với nhà xây trước năm 1980"),
+            st.checkbox("7. Kiểm tra quy định HOA (nếu có) và phân tuyến trường học (Ames Community School District)"),
+            st.checkbox("8. Kiểm tra lịch sử thuế đất trên cổng thông tin Story County Assessor & bảo hiểm quyền sở hữu (Title Insurance)")
         ]
         done_count = sum(checks)
         st.progress(done_count / len(checks))
-        st.write(f"**Tiến độ kiểm tra thực địa:** {done_count} / {len(checks)} hạng mục ({int(done_count/len(checks)*100)}%)")
+        st.write(f"**Tiến độ kiểm định (Home Inspection):** {done_count} / {len(checks)} hạng mục ({int(done_count/len(checks)*100)}%)")
         if done_count == len(checks):
-            st.success("🎉 Bạn đã hoàn tất đầy đủ các bước thẩm định an toàn trước khi đặt cọc!")
+            st.success("🎉 Hoàn tất đầy đủ quy trình kiểm định an toàn chuẩn bất động sản Ames, Iowa!")
 
 # =========================================================
-# TAB 5: SO SÁNH CÁC PHƯƠNG ÁN ĐÃ LƯU
+# TAB 5: SO SÁNH CÁC CĂN NHÀ ĐÃ LƯU TẠI AMES
 # =========================================================
 with tab5:
-    st.subheader("⚖️ Bảng Đặt Lên Bàn Cân Các Ngôi Nhà Đang Cân Nhắc")
-    st.write("Thay đổi thông số ở thanh bên trái và nhấn **'➕ Lưu phương án này vào bảng so sánh'** ở Tab 1 để đối chiếu nhiều căn nhà.")
+    st.subheader("⚖️ Bảng So Sánh Các Căn Nhà Đang Cân Nhắc Tại Ames, Iowa")
+    st.write("Thay đổi thông số bên trái và nhấn **'➕ Lưu căn nhà này vào bảng so sánh'** ở Tab 1 để đối chiếu nhiều phương án.")
 
-    if len(st.session_state.saved_houses) == 0:
-        st.info("Chưa có phương án nào được lưu. Hãy quay lại **Tab 1**, chọn thông số cho từng căn nhà và bấm nút lưu.")
+    if len(st.session_state.saved_ames_houses) == 0:
+        st.info("Chưa có căn nhà nào được lưu. Hãy quay lại **Tab 1**, chọn thông số và bấm nút lưu.")
     else:
-        df_compare = pd.DataFrame(st.session_state.saved_houses)
+        df_compare = pd.DataFrame(st.session_state.saved_ames_houses)
         st.dataframe(df_compare, use_container_width=True, hide_index=True)
 
         c_left, c_right = st.columns([3, 1])
         with c_left:
-            fig_cmp = px.bar(
-                df_compare, x="Tên phương án", y=["Giá dự đoán (Tỷ)", "Trọn gói (Tỷ)", "Dư/Thiếu NS (Tỷ)"],
-                barmode="group", title="So sánh Giá bán, Chi phí trọn gói & Mức dư/vượt ngân sách"
+            x_labels = [f"#{i+1} {name}" for i, name in enumerate(df_compare["Tên phương án"])]
+            gia_vals = pd.to_numeric(df_compare["Giá dự đoán ($)"], errors="coerce").fillna(0)
+            tron_goi_vals = pd.to_numeric(df_compare["Trọn gói ($)"], errors="coerce").fillna(0)
+            du_thieu_vals = pd.to_numeric(df_compare["Dư/Thiếu NS ($)"], errors="coerce").fillna(0)
+
+            fig_cmp = go.Figure()
+            fig_cmp.add_trace(go.Bar(
+                x=x_labels, y=gia_vals, name="Giá dự đoán ($)",
+                marker_color="#2563EB",
+                text=[f"${v:,.0f}" for v in gia_vals], textposition="outside"
+            ))
+            fig_cmp.add_trace(go.Bar(
+                x=x_labels, y=tron_goi_vals, name="Trọn gói ($)",
+                marker_color="#0284C7",
+                text=[f"${v:,.0f}" for v in tron_goi_vals], textposition="outside"
+            ))
+            fig_cmp.add_trace(go.Bar(
+                x=x_labels, y=du_thieu_vals, name="Dư/Thiếu NS ($)",
+                marker_color=["#16A34A" if v >= 0 else "#DC2626" for v in du_thieu_vals],
+                text=[f"${v:+,.0f}" for v in du_thieu_vals], textposition="outside"
+            ))
+            fig_cmp.update_layout(
+                barmode="group",
+                title="So sánh Giá bán, Chi phí trọn gói & Mức dư/vượt ngân sách ($ USD)",
+                yaxis_title="USD ($)",
+                height=390,
+                margin=dict(l=20, r=20, t=55, b=20),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             st.plotly_chart(fig_cmp, use_container_width=True)
+
         with c_right:
             csv_export = df_compare.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
                 label="📥 Tải bảng so sánh (CSV)",
                 data=csv_export,
-                file_name="so_sanh_phuong_an_mua_nha.csv",
+                file_name="so_sanh_nha_ames_iowa.csv",
                 mime="text/csv",
                 use_container_width=True
             )
             if st.button("🗑️ Xóa toàn bộ danh sách", use_container_width=True):
-                st.session_state.saved_houses = []
+                st.session_state.saved_ames_houses = []
                 st.rerun()
 
 # =========================================================
-# TAB 6: NẠP & KIỂM TRA DỮ LIỆU EXCEL / CSV CỦA NHÓM
+# TAB 6: NẠP DỮ LIỆU AMES HOUSING CỦA NHÓM 5
 # =========================================================
 with tab6:
-    st.subheader("📁 Kiểm Tra & Phân Tích Tệp Dữ Liệu Excel / CSV")
+    st.subheader("📁 Nạp & Huấn Luyện Trực Tiếp Trên Dữ Liệu Ames Housing Của Nhóm 5")
     st.info(
-        "💡 **Hướng dẫn chọn file trong bộ 3 file của Nhóm 5:**\n"
-        "- Hãy tải lên **`Nhóm5_GiaNha_2.xlsx`** (tệp tổng 100% dữ liệu) để xem toàn bộ thông tin.\n"
-        "- Không dùng riêng tệp `test` để huấn luyện vì chỉ chiếm 20% dữ liệu."
+        "💡 **Tự động nhận diện dữ liệu Ames, Iowa:**\n"
+        "- Nếu bạn tải lên tệp **`Nhóm5_GiaNha_2.xlsx`** (tệp tổng 100% dữ liệu) hoặc **`Nhóm5 _GiaNha_train_2.xlsx`** có chứa các cột chuẩn của Ames Housing "
+        "(`SalePrice`, `GrLivArea`, `Neighborhood`, `OverallQual`, ...), ứng dụng sẽ **tự động huấn luyện lại mô hình theo dữ liệu thật của bạn**!"
     )
 
-    uploaded = st.file_uploader("Chọn tệp Excel (.xlsx) hoặc CSV (.csv)", type=["xlsx", "csv"])
+    uploaded = st.file_uploader("Tải lên tệp Excel (.xlsx) hoặc CSV (.csv)", type=["xlsx", "csv"])
     if uploaded is not None:
         try:
             df_up = pd.read_csv(uploaded) if uploaded.name.endswith(".csv") else pd.read_excel(uploaded)
-            st.success(f"Đã tải lên `{uploaded.name}`: **{len(df_up):,} dòng** × **{len(df_up.columns)} cột**.")
-            st.dataframe(df_up.head(20), use_container_width=True)
+            st.success(f"Đã đọc tệp `{uploaded.name}`: **{len(df_up):,} dòng** × **{len(df_up.columns)} cột**.")
+            st.dataframe(df_up.head(15), use_container_width=True)
 
-            if {"Rank", "Score", "SubmissionCount"}.issubset(df_up.columns):
+            if {"SalePrice", "GrLivArea", "OverallQual"}.issubset(df_up.columns):
+                clean_df = df_up.copy()
+                clean_df["NeighborhoodTier"] = clean_df["Neighborhood"].map(CODE_TO_TIER).fillna(3) if "Neighborhood" in clean_df.columns else 3
+                clean_df["LotArea"] = pd.to_numeric(clean_df.get("LotArea", 9000), errors="coerce").fillna(9000)
+                clean_df["TotalBsmtSF"] = pd.to_numeric(clean_df.get("TotalBsmtSF", 900), errors="coerce").fillna(900)
+                clean_df["YearBuilt"] = pd.to_numeric(clean_df.get("YearBuilt", 2000), errors="coerce").fillna(2000)
+                clean_df["BedroomAbvGr"] = pd.to_numeric(clean_df.get("BedroomAbvGr", 3), errors="coerce").fillna(3)
+                clean_df["FullBath"] = pd.to_numeric(clean_df.get("FullBath", 2), errors="coerce").fillna(2)
+                clean_df["GarageCars"] = pd.to_numeric(clean_df.get("GarageCars", 2), errors="coerce").fillna(2)
+                if "CentralAir" in clean_df.columns:
+                    clean_df["CentralAir"] = clean_df["CentralAir"].map({"Y": 1, "N": 0, 1: 1, 0: 0}).fillna(1)
+                else:
+                    clean_df["CentralAir"] = 1
+
+                req_cols = [
+                    "GrLivArea", "LotArea", "TotalBsmtSF", "NeighborhoodTier",
+                    "OverallQual", "YearBuilt", "BedroomAbvGr", "FullBath",
+                    "GarageCars", "CentralAir", "SalePrice"
+                ]
+                clean_df = clean_df[req_cols].dropna()
+                if len(clean_df) >= 50:
+                    st.session_state.custom_ames_df = clean_df
+                    st.success(f"🚀 Đã kích hoạt mô hình huấn luyện trực tiếp trên **{len(clean_df):,} căn nhà** tại Ames, Iowa từ tệp của bạn!")
+            elif {"Rank", "Score", "SubmissionCount"}.issubset(df_up.columns):
                 st.warning(
-                    "⚠️ Tệp này là **dữ liệu bảng xếp hạng cuộc thi Kaggle** (chứa `Rank`, `Score`, `SubmissionCount`), "
-                    "không chứa đặc trưng căn nhà (`m²`, phòng ngủ, vị trí). App sẽ giữ nguyên bộ dữ liệu thị trường nhà ở ở các Tab 1–5 để bạn sử dụng."
+                    "⚠️ Tệp này là **bảng xếp hạng cuộc thi Kaggle** (chứa `Rank`, `Score`, `SubmissionCount`), "
+                    "chưa có thông số nhà ở Ames, Iowa. App vẫn sử dụng bộ dữ liệu thị trường Ames, IA tích hợp sẵn ở các Tab 1–5."
                 )
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Tổng số đội tham gia", f"{len(df_up):,}")
-                m2.metric("Điểm sai số trung vị (Score)", f"{df_up['Score'].median():.5f}")
-                m3.metric("Số lần nộp bài trung bình", f"{df_up['SubmissionCount'].mean():.1f} lần")
         except Exception as e:
             st.error(f"Lỗi khi đọc tệp: {e}")
