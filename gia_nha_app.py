@@ -3,9 +3,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score, mean_absolute_error
 
 # ---------------------------------------------------------
 # 1. CẤU HÌNH TRANG & GIAO DIỆN
@@ -34,7 +31,113 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. TẠO DỮ LIỆU THỊ TRƯỜNG & HUẤN LUYỆN MÔ HÌNH
+# 2. MÔ HÌNH RỪNG NGẪU NHIÊN THUẦN NUMPY (KHÔNG CẦN SKLEARN)
+# ---------------------------------------------------------
+class FastDecisionTree:
+    def __init__(self, max_depth=10, min_samples_split=8, max_features=None, rng=None):
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.max_features = max_features
+        self.rng = rng or np.random.default_rng(42)
+        self.tree = None
+
+    def _fit(self, X, y, depth):
+        n_samples, n_features = X.shape
+        if depth >= self.max_depth or n_samples < self.min_samples_split or np.std(y) < 1e-6:
+            return float(np.mean(y))
+
+        feat_indices = self.rng.choice(n_features, size=self.max_features or n_features, replace=False)
+        best_gain = -1.0
+        best_feat, best_thresh = None, None
+        parent_var = np.var(y) * n_samples
+
+        for f in feat_indices:
+            vals = X[:, f]
+            uniq = np.unique(vals)
+            if len(uniq) <= 1:
+                continue
+            thresholds = np.percentile(vals, np.linspace(15, 85, min(12, len(uniq))))
+            for t in np.unique(thresholds):
+                left_mask = vals <= t
+                n_l = int(np.sum(left_mask))
+                n_r = n_samples - n_l
+                if n_l < 3 or n_r < 3:
+                    continue
+                gain = parent_var - (np.var(y[left_mask]) * n_l + np.var(y[~left_mask]) * n_r)
+                if gain > best_gain:
+                    best_gain = gain
+                    best_feat = f
+                    best_thresh = float(t)
+
+        if best_feat is None:
+            return float(np.mean(y))
+
+        left_mask = X[:, best_feat] <= best_thresh
+        return (
+            best_feat,
+            best_thresh,
+            self._fit(X[left_mask], y[left_mask], depth + 1),
+            self._fit(X[~left_mask], y[~left_mask], depth + 1)
+        )
+
+    def fit(self, X, y):
+        self.tree = self._fit(X, y, 0)
+        return self
+
+    def _pred_one(self, row, node):
+        if not isinstance(node, tuple):
+            return node
+        feat, thresh, left, right = node
+        return self._pred_one(row, left if row[feat] <= thresh else right)
+
+    def predict(self, X):
+        X = np.asarray(X, dtype=float)
+        return np.array([self._pred_one(row, self.tree) for row in X])
+
+
+class FastRandomForest:
+    def __init__(self, n_estimators=45, max_depth=10, random_state=42):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.rng = np.random.default_rng(random_state)
+        self.estimators_ = []
+        self.feature_importances_ = None
+
+    def fit(self, X, y):
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=float)
+        n_samples, n_features = X.shape
+        self.estimators_ = []
+        for _ in range(self.n_estimators):
+            idx = self.rng.integers(0, n_samples, size=n_samples)
+            tree = FastDecisionTree(
+                max_depth=self.max_depth,
+                max_features=max(1, int(n_features * 0.75)),
+                rng=self.rng
+            )
+            tree.fit(X[idx], y[idx])
+            self.estimators_.append(tree)
+
+        sub_idx = self.rng.choice(n_samples, size=min(300, n_samples), replace=False)
+        X_sub, y_sub = X[sub_idx], y[sub_idx]
+        base_mse = np.mean((y_sub - self.predict(X_sub)) ** 2)
+        imps = np.zeros(n_features)
+        for f in range(n_features):
+            X_perm = X_sub.copy()
+            X_perm[:, f] = self.rng.permutation(X_perm[:, f])
+            perm_mse = np.mean((y_sub - self.predict(X_perm)) ** 2)
+            imps[f] = max(0.0, perm_mse - base_mse)
+        self.feature_importances_ = imps / imps.sum() if imps.sum() > 0 else np.ones(n_features) / n_features
+        return self
+
+    def predict(self, X):
+        X = np.asarray(X, dtype=float)
+        all_preds = np.array([t.predict(X) for t in self.estimators_])
+        return np.mean(all_preds, axis=0)
+
+
+# ---------------------------------------------------------
+# 3. TẠO DỮ LIỆU THỊ TRƯỜNG & HUẤN LUYỆN MÔ HÌNH
 # ---------------------------------------------------------
 KHU_VUC_MAP = {
     1: "Khu vực 1: Trung tâm VIP / Đô thị lõi",
@@ -51,8 +154,9 @@ NOI_THAT_MAP = {
 }
 NOI_THAT_REVERSE = {v: k for k, v in NOI_THAT_MAP.items()}
 
+
 @st.cache_data
-def generate_market_data(n_samples: int = 2000) -> pd.DataFrame:
+def generate_market_data(n_samples: int = 1500) -> pd.DataFrame:
     rng = np.random.default_rng(42)
     area_m2 = np.round(rng.uniform(30, 220, n_samples), 1)
     floors = rng.choice([1, 2, 3, 4, 5], size=n_samples, p=[0.14, 0.26, 0.30, 0.20, 0.10])
@@ -104,6 +208,7 @@ def generate_market_data(n_samples: int = 2000) -> pd.DataFrame:
         "GiaNha_TyVND": price_ty
     })
 
+
 @st.cache_resource
 def train_house_model(df: pd.DataFrame):
     feature_cols = [
@@ -111,21 +216,26 @@ def train_house_model(df: pd.DataFrame):
         "SoPhongNgu", "SoPhongWC", "NoiThat", "TuoiNha_Nam",
         "CoGaraOto", "GanTienIch", "PhapLy_SoHong"
     ]
-    X = df[feature_cols]
-    y = df["GiaNha_TyVND"]
+    X = df[feature_cols].values
+    y = df["GiaNha_TyVND"].values
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = RandomForestRegressor(n_estimators=180, max_depth=16, random_state=42, n_jobs=-1)
+    split_idx = int(len(df) * 0.8)
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
+
+    model = FastRandomForest(n_estimators=45, max_depth=10, random_state=42)
     model.fit(X_train, y_train)
 
     preds = model.predict(X_test)
-    r2 = r2_score(y_test, preds)
-    mae = mean_absolute_error(y_test, preds)
-    return model, feature_cols, r2, mae
+    r2 = 1.0 - np.sum((y_test - preds) ** 2) / np.sum((y_test - np.mean(y_test)) ** 2)
+    mae = float(np.mean(np.abs(y_test - preds)))
+    return model, feature_cols, float(r2), mae
+
 
 def predict_with_interval(model, input_df: pd.DataFrame):
     tree_preds = np.array([tree.predict(input_df.values)[0] for tree in model.estimators_])
     return float(np.mean(tree_preds)), float(np.percentile(tree_preds, 15)), float(np.percentile(tree_preds, 85))
+
 
 if "saved_houses" not in st.session_state:
     st.session_state.saved_houses = []
@@ -134,7 +244,7 @@ df_market = generate_market_data()
 model, feature_cols, model_r2, model_mae = train_house_model(df_market)
 
 # ---------------------------------------------------------
-# 3. THANH BÊN (SIDEBAR): CHỌN LỌC THÔNG SỐ NGÔI NHÀ CỤ THỂ
+# 4. THANH BÊN (SIDEBAR): CHỌN LỌC THÔNG SỐ NGÔI NHÀ CỤ THỂ
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("🎯 Thiết Lập Thông Số Ngôi Nhà")
@@ -208,7 +318,7 @@ unit_price_trieu = (pred_price * 1000) / dien_tich
 chenh_lech_ngan_sach = ngan_sach - pred_price
 
 # ---------------------------------------------------------
-# 4. GIAO DIỆN CHÍNH & CÁC TAB CHỨC NĂNG
+# 5. GIAO DIỆN CHÍNH & CÁC TAB CHỨC NĂNG
 # ---------------------------------------------------------
 st.markdown('<div class="main-header">🏠 Hệ Thống Dự Đoán & Tư Vấn Chọn Mua Nhà Đa Yếu Tố</div>', unsafe_allow_html=True)
 st.markdown(
@@ -334,7 +444,7 @@ with tab1:
 
     with chart_col2:
         st.subheader("🧩 Mức độ ảnh hưởng của các yếu tố")
-        st.caption("Tỷ trọng quyết định giá trị ngôi nhà từ mô hình học máy:")
+        st.caption("Tỷ trọng quyết định giá trị ngôi nhà từ mô hình dự đoán:")
 
         label_vn = {
             "DienTich_m2": "Diện tích (m²)",
@@ -493,10 +603,10 @@ with tab3:
 
 with tab4:
     st.subheader("📁 Dữ Liệu Huấn Luyện & Tùy Chọn Tải Dữ Liệu Thực Tế")
-    uploaded_file = st.file_uploader("Tải lên tệp CSV hoặc Excel (.xlsx) dữ liệu nhà đất", type=["csv", "xlsx"])
+    uploaded_file = st.file_uploader("Tải lên tệp CSV dữ liệu nhà đất", type=["csv"])
     if uploaded_file is not None:
         try:
-            user_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
+            user_df = pd.read_csv(uploaded_file)
             st.success(f"Đã đọc thành công tệp `{uploaded_file.name}` ({len(user_df)} dòng, {len(user_df.columns)} cột).")
             st.dataframe(user_df.head(20), use_container_width=True)
         except Exception as e:
